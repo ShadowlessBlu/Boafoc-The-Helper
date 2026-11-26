@@ -1,0 +1,63 @@
+# Copy to config.toml. All values are optional; these are the defaults.
+# Secrets can be given as environment variables instead:
+#   ASSISTANT_API_TOKEN, ASSISTANT_MQTT_PASSWORD
+
+[llm]
+host = "http://127.0.0.1:11434"
+model = "qwen3:1.7b"          # replace with the EXP-001 winner
+num_ctx = 4096
+temperature = 0.3
+keep_alive = "30m"
+think = false                 # Qwen3 "thinking": off is ~30x faster on the Pi (EXP-001)
+num_predict = 256             # reply token cap: a reply that never ends stops after ~30 s, not 300 s
+
+[memory]
+db_path = "data/assistant.db"
+embed_model = "nomic-embed-text"   # "" = keyword search instead
+top_k = 3
+min_score = 0.45
+history_days = 30                  # questions and replies are deleted after this (0 = keep forever)
+audit_days = 90                    # record of tool decisions; saved facts stay until you say "forget"
+
+[governor]
+default_rate_per_min = 10
+
+[api]
+enabled = true
+host = "127.0.0.1"            # "0.0.0.0" to reach it from the PC/phone; then a token is required
+port = 8765
+token = ""                     # full access (/ask); needed when host is not 127.0.0.1
+view_token = ""                # read-only: other devices open /face#view=<it>; see `python -m assistant --view-link`
+
+[mqtt]
+enabled = false               # true once Mosquitto is set up (scripts/install_voice.sh)
+host = "127.0.0.1"
+port = 1883
+username = "assistant"
+password = ""
+base_topic = "home"
+
+[voice]
+sample_rate = 16000
+mic_device = "default"        # see `arecord -L`
+speaker_device = "default"    # ALSA device (see `aplay -L`), or "pipewire" for Bluetooth speakers
+wake_engine = "openwakeword"  # or "personal": your own words, recorded with `python -m assistant.voice.enroll uzi`
+wake_word = "hey_jarvis"      # "" = press Enter instead of a wake word
+wake_threshold = 0.5
+wake_patience = 3               # frames (80 ms) in a row above the threshold before waking
+# wake_settings = "data/wake_settings.json"  # words on/off and thresholds set on the screen (win over wake_word)
+# wake_log_dir = "logs/wake"                 # what each wake word did, one CSV per day, kept 60 days
+vad_engine = "silero"         # "silero" (neural; steady fan noise doesn't count as speech) or "energy"
+silero_threshold = 0.5        # speech probability for "silero"
+vad_threshold = 500.0         # loudness for "energy"; tune: run `python3 -m assistant.voice.calibrate`
+listen_timeout_s = 7.0        # after the beep, give up if nobody starts talking
+silence_ms = 800
+max_utterance_s = 10.0
+stt_engine = "vosk"           # "vosk" or "whisper"
+vosk_model = "models/vosk-model-small-en-us-0.15"
+whisper_cmd = "whisper-cli -m {model} -f {wav} -nt -np -t 4"
+whisper_model = "models/ggml-tiny.en.bin"   # ~2 s per question on the Pi; base.en ~5 s
+whisper_prompt = "A spoken question or request to a home voice assistant."   # context hint; "" = none
+piper_cmd = "piper --model {model} --output_raw"   # check `piper --help` for your version
+piper_model = "models/en_US-lessac-medium.onnx"
+timing_log = "experiments/results/voice_timing.csv"

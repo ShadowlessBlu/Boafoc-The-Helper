@@ -1,0 +1,26 @@
+# Installed by scripts/install_service.sh (paths and user are filled in there).
+# Runs MQTT + HTTP API + voice loop. Secrets go in /etc/assistant.env (chmod 600):
+#   ASSISTANT_MQTT_PASSWORD=...
+#   ASSISTANT_API_TOKEN=...
+[Unit]
+Description=Personal AI Assistant
+After=network-online.target sound.target ollama.service mosquitto.service
+Wants=network-online.target ollama.service
+
+[Service]
+User=shadowlessblu
+SupplementaryGroups=audio
+WorkingDirectory=/home/shadowlessblu/assistant
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/etc/assistant.env
+ExecStart=/home/shadowlessblu/assistant/.venv/bin/python -m assistant --service
+Restart=on-failure
+RestartSec=5
+MemoryMax=6G
+# Basic hardening
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

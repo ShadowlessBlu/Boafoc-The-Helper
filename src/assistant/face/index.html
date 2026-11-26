@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assistant</title>
+<!--
+  The assistant's face and dashboard for the 7-inch DSI screen (800x480).
+  Served by the assistant at /face; polls /state. Works offline: no external files.
+  Add ?demo to the address to cycle through the four states without the assistant running.
+  Other devices: open /face#view=<view token> (run `python -m assistant --view-link` on the Pi).
+  The token stays after '#', so it is never sent in the address, only as a header to /state.
+-->
+<style>
+  :root { --bg: #0b0a10; --card: #15141b; --line: #24222c; --text: #e9e6f2; --dim: #8f8aa3;
+          --accent: #b9a6ff; --warn: #fac775; --off: #4a4658; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; cursor: none;
+               font-family: system-ui, "Segoe UI", Roboto, "DejaVu Sans", sans-serif; color: var(--text); }
+  #s { position: absolute; left: 0; top: 0; width: 800px; height: 480px; transform-origin: 0 0; }
+  .dim { color: var(--dim); }
+  #clock { position: absolute; left: 30px; top: 26px; font-size: 80px; font-weight: 500; line-height: 1;
+           font-variant-numeric: tabular-nums; }
+  #date { position: absolute; left: 32px; top: 118px; font-size: 20px; }
+  #mode { position: absolute; left: 32px; top: 156px; font-size: 19px; color: var(--accent); }
+  #dots { position: absolute; left: 32px; top: 192px; font-size: 14px; }
+  #dots span { margin-right: 18px; }
+  #dots i { display: inline-block; width: 9px; height: 9px; border-radius: 5px; margin-right: 6px;
+            background: var(--off); vertical-align: 1px; }
+  #face { position: absolute; right: 18px; top: 16px; width: 300px; height: 180px; }
+  #cards { position: absolute; left: 24px; right: 24px; bottom: 24px; height: 200px; display: grid;
+           grid-template-columns: 1fr 1.5fr 1fr; gap: 14px; font-size: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px;
+          overflow: hidden; }
+  .card h2 { font-size: 14px; font-weight: 400; color: var(--dim); margin: 0 0 10px; }
+  .big { font-size: 30px; line-height: 1.1; margin-bottom: 6px; }
+  .row { margin-top: 4px; }
+  #said { font-size: 18px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 4;
+          -webkit-box-orient: vertical; overflow: hidden; }
+  #heard { margin-top: 10px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .warn { color: var(--warn); }
+</style>
+</head>
+<body>
+<div id="s">
+  <div id="clock">--:--</div>
+  <div id="date" class="dim"></div>
+  <div id="mode">Starting…</div>
+  <div id="dots" class="dim"><span><i id="d-llm"></i>Model</span><span><i id="d-voice"></i>Voice</span><span><i id="d-mqtt"></i>Devices</span></div>
+  <svg id="face" viewBox="0 0 400 240" aria-hidden="true"></svg>
+  <div id="cards">
+    <div class="card"><h2>Pi</h2><div class="big" id="temp">–</div><div class="dim row" id="mem"></div><div class="dim row" id="thr"></div></div>
+    <div class="card"><h2>Last reply</h2><div id="said" class="dim">Nothing yet</div><div id="heard" class="dim"></div></div>
+    <div class="card"><h2>Home</h2><div id="lights"></div><div class="dim row" id="temps"></div></div>
+  </div>
+</div>
+<script>
+"use strict";
+const DEMO = new URLSearchParams(location.search).has("demo");
+const VIEW = new URLSearchParams(location.hash.slice(1)).get("view");
+const LABEL = { idle: "Waiting for the wake word", listening: "Listening…", thinking: "Thinking…",
+                speaking: "Speaking", offline: "Assistant offline" };
+const ACCENT = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+const OFF = getComputedStyle(document.documentElement).getPropertyValue("--off").trim();
+const $ = id => document.getElementById(id);
+let mode = "idle", fails = 0, voice = true;
+
+function fit() {
+  const k = Math.min(innerWidth / 800, innerHeight / 480);
+  const s = $("s");
+  s.style.transform = `scale(${k})`;
+  s.style.left = (innerWidth - 800 * k) / 2 + "px";
+  s.style.top = (innerHeight - 480 * k) / 2 + "px";
+}
+addEventListener("resize", fit);
+
+// ---------- the face: two slanted visor eyes ----------
+function eyes(m, t, c) {
+  let h = m === "listening" ? 58 : m === "thinking" ? 20 : 40;
+  if ((m === "idle" || m === "offline") && (t % 4.2) < 0.14) h = 4;   // blink
+  if (m === "offline") h = 10;
+  const slant = m === "listening" ? 0 : 12, dx = m === "thinking" ? Math.sin(t * 3) * 14 : 0;
+  let s = "";
+  for (const [x0, d] of [[135, 1], [265, -1]]) {
+    const x = x0 + dx, y = 105, w = 44, xo = x - d * w, xi = x + d * w;
+    s += `<path d="M${xo} ${y - h / 2} L${xi} ${y - h / 2 + slant} L${xi} ${y + h / 2} L${xo} ${y + h / 2} Z"
+          fill="${c}" stroke="${c}" stroke-width="10" stroke-linejoin="round"/>`;
+  }
+  if (m === "speaking") {
+    for (let i = 0; i < 11; i++) {
+      const b = 6 + Math.abs(Math.sin(t * 9 + i * 1.3) * Math.sin(t * 4 + i)) * 34;
+      s += `<rect x="${150 + i * 9.5}" y="${(190 - b / 2).toFixed(1)}" width="5" height="${b.toFixed(1)}" rx="2.5" fill="${c}"/>`;
+    }
+  } else if (m === "thinking") {
+    for (let i = 0; i < 3; i++) {
+      const o = 0.25 + 0.75 * Math.max(0, Math.sin(t * 5 - i * 0.9));
+      s += `<circle cx="${180 + i * 20}" cy="190" r="6" fill="${c}" opacity="${o.toFixed(2)}"/>`;
+    }
+  } else if (m === "listening") {
+    const r = 8 + (t * 30 % 30);
+    s += `<circle cx="200" cy="190" r="6" fill="${c}"/><circle cx="200" cy="190" r="${r.toFixed(1)}" fill="none"
+          stroke="${c}" stroke-width="2" opacity="${(1 - (r - 8) / 30).toFixed(2)}"/>`;
+  }
+  return s;
+}
+
+let last = 0;
+function frame(ms) {
+  const fps = mode === "idle" || mode === "offline" ? 10 : 24;   // keep the CPU for the model
+  if (ms - last >= 1000 / fps) {
+    last = ms;
+    const m = DEMO ? ["idle", "listening", "thinking", "speaking"][Math.floor(ms / 3000) % 4] : mode;
+    $("face").innerHTML = eyes(m, ms / 1000, m === "offline" ? OFF : ACCENT);
+    $("mode").textContent = m === "idle" && !voice && !DEMO ? "Ready · voice off" : LABEL[m];
+  }
+  requestAnimationFrame(frame);
+}
+
+// ---------- clock and dashboard ----------
+function tick() {
+  const d = new Date(), h = d.getHours();
+  $("clock").textContent = `${h % 12 || 12}:${String(d.getMinutes()).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+  $("date").textContent = d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+}
+
+function dot(id, ok) { $(id).style.background = ok ? ACCENT : OFF; }
+
+function show(st) {
+  mode = st.mode;
+  voice = !!st.voice;
+  const pi = st.pi || {};
+  $("temp").textContent = pi.temp_c != null ? `${pi.temp_c.toFixed(0)} °C` : "–";
+  $("temp").className = "big" + (pi.temp_c >= 80 ? " warn" : "");
+  $("mem").textContent = pi.mem_used_gb != null ? `${pi.mem_used_gb.toFixed(1)} / ${pi.mem_total_gb.toFixed(0)} GB memory` : "";
+  $("thr").textContent = pi.throttled == null ? "" : pi.throttled ? "Throttling" : "No throttling";
+  $("thr").className = "row " + (pi.throttled ? "warn" : "dim");
+  $("said").textContent = st.said || "Nothing yet";
+  $("said").className = st.said ? "" : "dim";
+  $("heard").textContent = st.heard ? `You: ${st.heard}` + (st.first_word_s ? ` · ${st.first_word_s} s` : "") : "";
+  const lights = Object.entries((st.home || {}).lights || {}).filter(([, v]) => v === "on").map(([k]) => k);
+  $("lights").textContent = lights.length ? `Lights on: ${lights.join(", ")}` : "All lights off";
+  const temps = Object.entries((st.home || {}).temps || {});
+  $("temps").textContent = temps.length ? temps.map(([k, v]) => `${k} ${v.toFixed(1)} °C`).join(" · ")
+                                        : "No temperature sensors yet";
+  dot("d-llm", st.llm_ok); dot("d-voice", st.voice); dot("d-mqtt", st.mqtt === "connected");
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/state", { cache: "no-store",
+                                      headers: VIEW ? { Authorization: "Bearer " + VIEW } : {} });
+    if (!r.ok) throw new Error(r.status);
+    show(await r.json());
+    fails = 0;
+  } catch (e) {
+    if (++fails >= 3) { mode = "offline"; dot("d-llm", false); dot("d-voice", false); dot("d-mqtt", false); }
+  }
+  setTimeout(poll, mode === "idle" || mode === "offline" ? 1000 : 250);
+}
+
+fit(); tick(); setInterval(tick, 1000);
+if (!DEMO || location.protocol !== "file:") poll();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

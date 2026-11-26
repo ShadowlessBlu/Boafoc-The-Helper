@@ -1,0 +1,18 @@
+Fixed benchmark prompts for EXP-001. Do not edit once results exist; make standard_v2 instead.
+Each prompt starts with a line "### <id>".
+
+### short
+What is a Raspberry Pi? Answer in two sentences.
+
+### explain
+Explain how a refrigerator keeps food cold. Use simple language and about 100 words.
+
+### assistant
+You are a home assistant. The user says: "I'm heading to bed, can you turn off the living room lights and remind me to call my mum tomorrow at 10?" Reply with what you would do, step by step.
+
+### long_context
+Read the notes below and answer the question at the end.
+
+Notes: The garden has three raised beds. Bed A grows tomatoes and basil and is watered every morning at 6:00. Bed B grows peppers and onions and is watered every second day at 7:30. Bed C is resting this season and only gets compost. A soil sensor in Bed A reports moisture every 10 minutes over MQTT on the topic garden/bedA/moisture. When moisture drops below 30 percent, the pump runs for 2 minutes. The pump is powered by a 12 V supply through a relay on GPIO 17. In March the relay failed once and was replaced. The water tank holds 200 litres and is refilled from rainwater. In the dry season the tank must be topped up from the mains about once a week. The sensor batteries are changed every four months.
+
+Question: Which bed is watered least often, and what controls the pump in Bed A?

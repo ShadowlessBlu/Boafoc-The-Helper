@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.venv/
+.venv-research/
+research/models/
+research/data/
+config.toml
+data/
+experiments/results/
+*.db
+.env
+models/
+firmware/**/secrets.h
+
+# Not published: logs, machine-specific reports, generated audio, third-party copies
+*.log
+logs/
+experiments/baseline-*.md
+experiments/wake_spellings/
+research/tools/
+copy-ssh-key-to-pi.ps1

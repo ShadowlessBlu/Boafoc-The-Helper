@@ -1,0 +1,13 @@
+The kitchen light has been flickering since Tuesday, so I replaced the bulb this morning. It still flickers when the fridge compressor starts, which suggests the problem is a loose connection or a voltage drop on that circuit rather than the bulb itself. An electrician should check the wiring before the weekend.
+
+A small language model predicts the next token from the tokens it has already seen. Each layer refines a hidden representation of the text. Early layers tend to capture spelling and local grammar, while later layers combine information across the whole sentence. When a model is compressed, the goal is to remove what contributes least while keeping the behaviour that matters for the task.
+
+Every morning the market opens before sunrise. Traders arrange tomatoes, onions, peppers and yams in neat piles, and the smell of roasted plantain drifts between the stalls. By eight o'clock the narrow paths are crowded, and buyers argue cheerfully about prices while children run errands between the shops.
+
+To water the garden automatically, a moisture sensor reports a reading every ten minutes. When the soil becomes too dry, a relay switches on a small pump for two minutes. The controller logs each event so that the owner can see how often the plants needed water and whether the pump is working correctly.
+
+Please remind me to call my mother tomorrow at ten, and turn off the living room lights when I go to bed. If the bedroom is colder than eighteen degrees, tell me before I sleep so I can find another blanket.
+
+The Raspberry Pi is a small single-board computer. It runs a full Linux operating system, has general-purpose input and output pins for electronics projects, and draws only a few watts of power. Because it is cheap and well documented, it is widely used in schools, research labs and home automation projects.
+
+Water boils at one hundred degrees Celsius at sea level. At higher altitudes the air pressure is lower, so water boils at a lower temperature, and food takes longer to cook. Pressure cookers work the other way: by raising the pressure they raise the boiling point and cook food faster.

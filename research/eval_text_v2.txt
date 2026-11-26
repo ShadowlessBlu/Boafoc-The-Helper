@@ -1,0 +1,277 @@
+APIs and Networking
+
+The assistant's parts talk to each other over the network: the Python app calls the LLM server over HTTP, ESP32 devices talk over MQTT, and a phone or PC might talk to the assistant through a web API. Streaming token-by-token responses is what makes it feel fast.
+
+- HTTP request/response, status codes, JSON bodies
+- Server-Sent Events / chunked streaming (how Ollama streams tokens)
+- WebSockets for two-way, low-latency messaging
+- Binding to `127.0.0.1` vs `0.0.0.0` — who on the network can reach a service
+- `ufw` firewall basics on the Pi
+
+
+Databases
+
+The assistant needs to remember things. Structured facts (who, when, what action) fit a relational database; fuzzy "find something similar to this" lookups need **vector embeddings** stored in a vector index. SQLite runs in-process with no server, which suits the Pi.
+
+- SQL basics: tables, keys, indexes, transactions
+- WAL mode for safe concurrent reads/writes
+- Vector search: store embedding arrays, find nearest neighbours by cosine similarity
+- Options: `sqlite-vec`, Chroma, or plain NumPy for small datasets
+
+
+Linux Fundamentals
+
+Raspberry Pi OS is Debian-based Linux. Everything is a file, programs run as processes owned by users, and long-running programs (like the assistant) are managed by **systemd**. Knowing how Linux reports memory (used vs. available vs. page cache vs. swap) matters a lot later, because LLM weights are memory-mapped files.
+
+- Memory: `MemAvailable` in `/proc/meminfo` is the real "free" figure; page cache is reclaimable
+- mmap: llama.cpp/Ollama map GGUF files into memory, so RSS can grow as pages are touched
+- Swap / zram on a Pi: slows inference badly if the model spills into it
+- Thermals: Pi 5 throttles around 80–85 °C; `vcgencmd get_throttled` shows if it happened
+- Permissions: audio devices need the `audio` group; GPIO needs `gpio`
+
+
+Python Engineering
+
+The assistant is a long-running program with several concurrent parts (microphone, speech recognition, LLM, MQTT). Good structure — modules with clear interfaces, config files, logging and tests — is what keeps it modular and debuggable as it grows.
+
+- Package layout: `src/assistant/{audio,brain,memory,governor,tools,iot}`
+- asyncio event loop vs. threads vs. processes; the GIL and why CPU-heavy work goes to a subprocess or C library
+- Config with `pydantic-settings` or TOML; secrets in `.env` (never committed)
+- Structured logging (JSON lines) so experiments can be analysed later
+
+
+LLM Inference
+
+Inference has two phases. **Prefill** processes the whole prompt at once (compute-heavy). **Decode** generates one token at a time, and each token needs every weight read from RAM — so decode speed is roughly *memory bandwidth ÷ model size*. That rule of thumb explains why smaller and more quantized models are faster.
+
+- Rough upper bound: tokens/s ≈ bandwidth (GB/s) ÷ model size (GB) (Pi 5 bandwidth: to check by measurement)
+- Prefill is faster per token than decode (batching across the prompt)
+- Threads: Pi 5 has 4 Cortex-A76 cores; more threads than cores hurts
+- Sampling settings change quality, not speed
+
+
+Neural Networks
+
+A neural network is a chain of matrix multiplications with non-linear functions between them: $y = f(Wx + b)$. Training adjusts $W$ and $b$ to reduce a loss, using gradients computed by backpropagation (the chain rule). Every LLM is, at heart, a very large stack of these operations.
+
+- Matrix multiply dominates compute; memory reads dominate time on a Pi
+- Activation functions: ReLU, GELU, SiLU
+- Loss functions: MSE, cross-entropy (used for next-token prediction)
+- Optimisers: SGD, Adam; learning rate
+- Parameters × bytes per parameter = model size (FP32 = 4 B, FP16 = 2 B)
+
+
+Prompt Engineering
+
+Small models (0.6B–3B) follow instructions less reliably than large ones. Clear, short system prompts, explicit output formats and a few examples make a big difference. Tool calling is just prompting the model to output a structured request that the Governor then checks.
+
+- Chat templates and roles (system / user / assistant / tool)
+- Constrained output: JSON schema / grammar in llama.cpp (GBNF), `format` in Ollama
+- Prompt length costs prefill time and KV cache memory
+
+
+Tokenization and Embeddings
+
+LLMs don't see characters; they see tokens from a fixed vocabulary, built with algorithms like Byte-Pair Encoding. Each token ID maps to an embedding vector. Separately, sentence-embedding models turn whole texts into one vector, which is what memory retrieval uses.
+
+- BPE merge rules; vocabulary size vs sequence length trade-off
+- Special tokens and chat templates
+- Cosine similarity: $\cos\theta = \frac{a\cdot b}{\|a\|\|b\|}$
+- Embedding models on the Pi: e.g. `nomic-embed-text`, `all-MiniLM-L6-v2`
+
+
+Transformers
+
+A transformer turns each token into a vector, then repeatedly lets every token "look at" previous tokens through attention: $\text{Attention}(Q,K,V)=\text{softmax}(QK^T/\sqrt{d_k})V$. Small LLMs like Qwen, Llama and Gemma are decoder-only transformers that predict the next token, one at a time.
+
+- Embedding → N × (attention + MLP) blocks → output head
+- Causal mask: tokens can only attend to earlier tokens
+- Positional information: RoPE
+- Grouped-query attention (GQA) reduces KV cache size
+- Most parameters are in the MLP blocks
+
+
+Fine Tuning and LoRA
+
+LoRA freezes the original weights and learns two small matrices per layer whose product is the update. With rank $r$ much smaller than the layer size, only a tiny fraction of parameters train, so it fits on a consumer GPU or Colab. The adapter can be merged into the model and exported to GGUF for the Pi.
+
+- Rank $r$, alpha, target modules (q_proj, v_proj, …)
+- Dataset formatting with the model's chat template
+- Overfitting on small datasets; holding out a test set
+- Merge adapter → convert to GGUF → quantize → `ollama create` with a Modelfile
+
+
+GGUF and Ollama
+
+GGUF is the single-file model format used by llama.cpp. It stores the architecture, tokenizer and quantized tensors so it can be memory-mapped and run directly. Ollama wraps llama.cpp with a model library, an HTTP API and easy model management — convenient for the assistant, while raw llama.cpp is better for experiments.
+
+- GGUF header, key/value metadata, tensor info, alignment
+- Ollama: `ollama pull/run/list/ps`, Modelfile (`FROM`, `PARAMETER num_ctx`, `SYSTEM`)
+- Ollama keeps models loaded for a while (`keep_alive`) — affects RAM
+- llama.cpp: `llama-cli`, `llama-server`, `llama-bench`, `llama-quantize`
+
+
+Knowledge Distillation
+
+In distillation a small **student** learns to copy a large **teacher**'s output distribution, not just the correct answer. The loss mixes normal cross-entropy with KL divergence to the teacher's softened outputs (temperature $T$). Training needs a GPU (PC or Colab); the Pi only runs the result.
+
+- Soft targets: $\text{softmax}(z/T)$ carries more information than one-hot labels
+- Sequence-level distillation: train the student on text the teacher generated
+- Task-specific distillation (e.g. only my assistant's intents/tool calls) is far cheaper
+
+
+KV Cache Optimization
+
+During decoding, the keys and values of past tokens are cached so they aren't recomputed. Its size grows linearly with context: $\text{KV bytes} = 2 \times L \times n_{kv} \times d_{head} \times n_{ctx} \times b$ ($L$ layers, $n_{kv}$ KV heads, $d_{head}$ head size, $b$ bytes per value). On an 8 GB Pi, long contexts can cost as much RAM as the model itself.
+
+- GQA/MQA: fewer KV heads → smaller cache
+- KV cache quantization in llama.cpp (`--cache-type-k q8_0 --cache-type-v q8_0`, needs flash attention)
+- Ollama: `num_ctx` sets the context size; `OLLAMA_KV_CACHE_TYPE`
+- Context shifting / sliding windows for long chats
+
+
+Model Benchmarking
+
+A benchmark only counts if it can be repeated. Fix the prompt, settings, thread count and cooling; do a warm-up run; run several times; and log everything. Speed numbers without quality numbers (and vice versa) don't answer the real question: what's the best model for *this* assistant on *this* Pi.
+
+- Speed: prefill t/s, decode t/s, time-to-first-token
+- Memory: peak RSS, `MemAvailable` drop
+- Quality: perplexity, a small task test set (my 20 assistant questions), optional lm-eval tasks
+- Environment: CPU temp, throttling flags, clock speed, power (USB-C meter if available)
+
+
+Model Pruning
+
+Pruning removes weights that matter least. **Unstructured** pruning zeroes individual weights — the matrix is the same shape, so dense CPU kernels (like llama.cpp) do the same work. **Structured** pruning removes whole heads, channels or layers, which actually shrinks the computation.
+
+- Magnitude pruning; Wanda (weights × activations); SparseGPT
+- 2:4 semi-structured sparsity needs special hardware support
+- Layer pruning: later-middle layers are often most redundant
+- Pruned models usually need a short fine-tune ("healing") to recover quality
+
+
+Model Quantization
+
+Quantization stores weights with fewer bits. A simple scheme maps each block of weights to integers: $q = \text{round}(w / s)$, and later $w \approx s \cdot q$, where $s$ is a per-block scale. Fewer bits = smaller file, less RAM, faster decode (less memory to read) — but some accuracy is lost, especially below 4 bits.
+
+- Block-wise quantization: each block of 32 weights has its own scale (Q8_0, Q4_0)
+- K-quants: mixed precision for more important tensors (`_K_M`, `_K_S`)
+- Weight-only vs weight+activation quantization
+- Post-training methods: GPTQ, AWQ; importance matrix (imatrix) in llama.cpp
+- Example: 1B params at 4.5 bits ≈ 0.56 GB weights
+
+
+Digital Audio Fundamentals
+
+Sound is sampled into numbers. Speech models usually want 16 kHz, 16-bit, mono. Sampling at $f_s$ captures frequencies up to $f_s/2$ (Nyquist). Models don't use raw samples directly; they use **mel spectrograms** — energy in frequency bands over short frames.
+
+- ALSA devices: `arecord -l`, `aplay -l`; USB mic vs I2S mic HAT
+- Frames, chunks and buffer sizes → latency
+- Short-time Fourier transform, mel scale, MFCCs
+- Noise, gain, voice activity detection (VAD)
+
+
+Speech Recognition
+
+Speech-to-text converts audio to words. **Vosk** (Kaldi-based) streams results as you speak and is light. **Whisper** (transformer encoder-decoder) is more accurate but processes chunks and is heavier; whisper.cpp and faster-whisper make small Whisper models usable on a Pi. WER = (substitutions + deletions + insertions) ÷ words; RTF = processing time ÷ audio length.
+
+- Acoustic model + language model (Vosk) vs end-to-end transformer (Whisper)
+- Model sizes: Vosk small (~50 MB), Whisper tiny/base/small
+- Accent and noise robustness
+
+
+Text to Speech
+
+Neural TTS converts text to phonemes, predicts audio features and generates a waveform. **Piper** uses VITS-based voices exported to ONNX and runs faster than real time on a Pi. Speaking the first sentence while the LLM is still generating the rest makes the assistant feel much faster.
+
+- Text normalisation (numbers, dates) and phonemisation (espeak-ng)
+- Voice quality levels: x_low / low / medium / high
+- Sentence splitting on streamed LLM output
+
+
+Wake Word Detection
+
+A wake-word model is a small classifier that runs continuously on short audio windows and fires when it hears the keyword. It must be cheap (always running) and balanced between false accepts (wakes by accident) and false rejects (ignores you). The threshold sets that trade-off.
+
+- Pipeline: mel features → embedding model → small classifier
+- Thresholds and smoothing over several frames
+- Custom wake words via synthetic training data
+
+
+Admin and Recovery Access
+
+A device that runs all the time needs a way in when things break, without opening a security hole. SSH keys (no passwords), systemd auto-restart, health checks and backups make it recoverable.
+
+- SSH key-only login; disable password auth once keys work
+- systemd `Restart=on-failure`, watchdog, `journalctl` logs
+- Health endpoint `/health` reporting LLM, STT, TTS, MQTT status
+- Backups: `rsync` of `~/assistant/data` to the PC; SD card image
+
+
+AI Brain
+
+The AI Brain is the coordinator. It takes text from speech recognition, builds a prompt with relevant memories, asks the LLM for a reply or a tool request, sends any tool request to the Governor, and returns the result to text-to-speech. It does not execute actions itself.
+
+- State machine: idle → listening → thinking → acting → speaking
+- Intent routing: simple commands handled by rules, open questions by the LLM
+- Tool registry with JSON schemas
+- Timeouts and graceful fallback ("I couldn't do that")
+
+
+Governor and Tool Safety
+
+The key design rule: **the LLM proposes, the Governor decides**. Every tool call is checked against an allow-list, argument validation, rate limits and risk level before running. Small models make mistakes and can be manipulated by text they read, so safety cannot depend on the model behaving.
+
+- Risk tiers: read-only (auto), low (auto + log), sensitive (spoken confirmation), forbidden
+- Schema validation of tool arguments (pydantic)
+- Rate limits and execution timeouts
+- Prompt injection: treat tool output as data, never as instructions
+- Audit log: who, what, when, decision, reason
+
+
+Memory System
+
+Short-term memory is the recent conversation kept in the context window (limited by KV cache RAM). Long-term memory is facts stored in a database and fetched when relevant using embedding search, then added to the prompt — a small form of retrieval-augmented generation.
+
+- Rolling window + summarisation of older turns
+- Memory write rules: only store stable facts the user confirms
+- Retrieval: top-k by cosine similarity, with a minimum score
+- User controls: list, edit and delete memories
+
+
+Personal Ecosystem
+
+The Personal Ecosystem is everything the assistant knows about and connects to: who the users are, their preferences, and the apps and services it can use. The offline-first goal means local services first and cloud services only as optional extras.
+
+- Profile: name, voice ID (later), preferences, permissions
+- Integrations behind the same tool interface and Governor
+- Local sync: CalDAV, Obsidian vault files, local file search
+
+
+ESP32 Integration
+
+ESP32 boards are the assistant's hands and senses: sensors publish readings, actuators subscribe to commands. Each device should report online/offline (MQTT last will) and refuse malformed commands.
+
+- Arduino core vs ESP-IDF
+- PubSubClient / AsyncMqttClient libraries
+- Wi-Fi reconnect + MQTT reconnect loops
+- Deep sleep for battery sensors
+
+
+Home Automation
+
+Home automation turns events (time, sensor values, voice commands) into actions. The assistant can either drive devices directly over MQTT or talk to Home Assistant. Physical actions (locks, heaters, power) are the highest-risk tools, so they go through the Governor's confirmation tier.
+
+- Device registry: name, room, topic, type, risk tier
+- Rules: trigger → condition → action
+- Fail-safe states when the Pi or Wi-Fi is down
+
+
+MQTT
+
+MQTT is a lightweight publish/subscribe protocol. Devices publish messages to **topics** (e.g. `home/livingroom/light/set`) on a **broker**, and anything subscribed gets them. It suits ESP32 devices: small messages, persistent connection, works fine on local Wi-Fi with no internet.
+
+- QoS 0/1/2 delivery guarantees
+- Retained messages and last will (device offline detection)
+- Topic design: `home/<room>/<device>/<state|set>`
+- Security: username/password or TLS, ACLs per device

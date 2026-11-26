@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up Personal AI Assistant data
+
+[Service]
+Type=oneshot
+User=shadowlessblu
+WorkingDirectory=/home/shadowlessblu/assistant
+ExecStart=/usr/bin/bash /home/shadowlessblu/assistant/scripts/backup.sh
